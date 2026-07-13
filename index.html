@@ -79,43 +79,52 @@
   }
   .sheet-head { display: flex; align-items: flex-end; gap: 10px; }
   .sheet-head .title { font-size: 15px; font-weight: 700; letter-spacing: .05em; }
-  .sheet-head .deadline { font-size: 9.5px; color: #444; margin-left: auto; align-self: center; }
-  .name-box { display: flex; border: 1.2px solid var(--line); }
-  .name-box .nlabel { padding: 3px 8px; border-right: 1.2px solid var(--line); background: #eee; font-size: 10px; display: flex; align-items: center; }
-  .name-box .nvalue { padding: 3px 10px; min-width: 100px; font-size: 12px; font-weight: 600; }
+  .name-line {
+    margin-left: auto; display: flex; gap: 14px; align-items: flex-end;
+    border-bottom: 1px solid var(--line); padding: 0 14px 2px; min-width: 170px; font-size: 11px;
+  }
+  .name-line .nvalue { font-weight: 600; font-size: 12px; }
+  .deadline { text-align: center; font-size: 9.5px; color: #333; margin-top: 4px; }
 
   .sec-title { font-weight: 700; font-size: 11px; margin: 8px 0 2px; }
-  .sec-title:first-of-type { margin-top: 10px; }
   .sec-note { font-weight: 400; font-size: 9px; color: #555; }
 
+  /* 行動結果の表: 横は点線、縦線は勤務場所の両脇のみ（Excel原本と同じ） */
   table.days { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.days th, table.days td { border: 1px solid var(--line); padding: 2px 4px; vertical-align: middle; }
-  table.days th { background: #eee; font-weight: 600; font-size: 9.5px; text-align: center; }
+  table.days th, table.days td { padding: 2px 4px; vertical-align: middle; }
+  table.days th {
+    font-weight: 600; font-size: 9.5px; text-align: center;
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
+  table.days td { border-bottom: 1px dotted #999; }
+  table.days th:nth-child(5), table.days td:nth-child(5) {
+    border-left: 1px dotted #999; border-right: 1px dotted #999;
+  }
   table.days col.c-date { width: 13mm; }
   table.days col.c-dow  { width: 9mm; }
   table.days col.c-time { width: 15mm; }
   table.days col.c-hour { width: 11mm; }
   table.days col.c-place{ width: 26mm; }
   table.days td.center { text-align: center; }
-  table.days td.date, table.days td.dow { text-align: center; background: #fafafa; }
+  table.days td.date, table.days td.dow { text-align: center; }
   table.days tr.total td { border: none; }
-  table.days tr.total td.tlabel { text-align: right; padding-right: 6px; font-size: 9.5px; color: #444; border: none; }
-  table.days tr.total td.tval { border: none; text-align: center; font-weight: 700; }
+  table.days tr.total td.tval { text-align: center; padding: 1px 4px; }
 
+  /* 成果・観察・分析・その他: 行ごとの点線下線のみ */
   table.list { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.list td { border: 1px solid var(--line); padding: 2px 5px; vertical-align: top; }
+  table.list td { border: none; border-bottom: 1px dotted #999; padding: 2px 5px; vertical-align: top; }
   table.list col.c-mark { width: 9mm; }
-  table.list td.mark { text-align: center; background: #fafafa; }
+  table.list td.mark { text-align: center; }
 
-  .free-box { border: 1px solid var(--line); min-height: 16mm; padding: 3px 5px; }
+  /* フリーライティング: 罫線ノート風 */
+  .free-box { min-height: 16mm; padding: 0 2px; }
+  .free-box .ce { line-height: 22px; min-height: 66px;
+    background-image: repeating-linear-gradient(to bottom, transparent 0 21px, #aaa 21px 22px); }
 
   .ce { min-height: 1.35em; white-space: pre-wrap; word-break: break-all; outline: none; }
-  .ce:focus { background: #eef6ff; }
+  .ce:focus { background-color: #eef6ff; }
   .ce:empty::before { content: attr(data-ph); color: #bbb; }
   td .ce { min-height: 1.35em; }
-
-  .dow-sat { color: #1a56b0; }
-  .dow-sun { color: #c00; }
 
   /* ---------- 印刷 ---------- */
   @page { size: A4 portrait; margin: 8mm; }
@@ -210,9 +219,9 @@
 
   <div class="sheet-head">
     <div class="title">業務週報(人事部用)</div>
-    <div class="deadline">＊毎週月曜日24時までに報告</div>
-    <div class="name-box"><div class="nlabel">氏名</div><div class="nvalue" id="nameDisp"></div></div>
+    <div class="name-line"><span>氏名</span><span class="nvalue" id="nameDisp"></span></div>
   </div>
+  <div class="deadline">＊毎週月曜日24時までに報告</div>
 
   <div class="sec-title">先週行動結果</div>
   <table class="days" id="lastWeekTable">
@@ -299,7 +308,8 @@ function calcHours(timeStr) {
   let dur = end - start;
   if (dur <= 0) return '';
   if (dur >= 7) dur -= 1; // 休憩1時間控除
-  return (Math.round(dur * 10) / 10).toFixed(1);
+  const v = Math.round(dur * 10) / 10;
+  return (v % 1 === 0 ? String(v) : v.toFixed(1)) + 'h'; // 原本と同じ「8h」表記
 }
 
 /* ---------- シート構築 ---------- */
@@ -308,10 +318,9 @@ function buildDaysTable(tableId, weekKey) {
   tbody.innerHTML = '';
   for (let i = 0; i < 7; i++) {
     const tr = document.createElement('tr');
-    const dowCls = i === 5 ? 'dow-sat' : i === 6 ? 'dow-sun' : '';
     tr.innerHTML =
       '<td class="date" data-datecell="' + weekKey + '.' + i + '"></td>' +
-      '<td class="dow ' + dowCls + '">' + DOWS[i] + '</td>' +
+      '<td class="dow">' + DOWS[i] + '</td>' +
       '<td class="center"><div class="ce" contenteditable="plaintext-only" data-bind="' + weekKey + '.' + i + '.time"></div></td>' +
       '<td class="center"><div class="ce" contenteditable="plaintext-only" data-bind="' + weekKey + '.' + i + '.hours"></div></td>' +
       '<td><div class="ce" contenteditable="plaintext-only" data-bind="' + weekKey + '.' + i + '.place"></div></td>' +
@@ -320,7 +329,7 @@ function buildDaysTable(tableId, weekKey) {
   }
   const tr = document.createElement('tr');
   tr.className = 'total';
-  tr.innerHTML = '<td></td><td></td><td class="tlabel">合計</td><td class="tval" data-total="' + weekKey + '"></td><td></td><td></td>';
+  tr.innerHTML = '<td></td><td></td><td></td><td class="tval" data-total="' + weekKey + '"></td><td></td><td></td>';
   tbody.appendChild(tr);
 }
 
@@ -373,7 +382,7 @@ function renderTotals() {
   ['lastWeek', 'thisWeek'].forEach(wk => {
     const sum = state[wk].reduce((s, d) => s + (parseFloat(d.hours) || 0), 0);
     document.querySelector('[data-total="' + wk + '"]').textContent =
-      sum ? (Math.round(sum * 10) / 10) : '';
+      sum ? (Math.round(sum * 10) / 10) + 'h' : '';
   });
 }
 

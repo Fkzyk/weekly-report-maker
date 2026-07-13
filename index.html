@@ -59,6 +59,15 @@
   .intake input[type="text"] { font-size: 12.5px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 4px; width: 90px; }
   .intake .hint { font-size: 11.5px; color: #888; margin-top: 6px; }
   .intake .sel-buttons { display: flex; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; color: #555; flex-wrap: wrap; }
+  .ai-box {
+    margin-top: 10px; padding: 10px 12px; border: 1.5px solid #b7d3f0; background: #f4f9ff;
+    border-radius: 7px; font-size: 12.5px;
+  }
+  .ai-box input[type="password"] { font-size: 12.5px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 4px; }
+  .ai-box a { font-size: 12px; }
+  #aiStatus { font-size: 12px; }
+  #aiStatus.err { color: #c53030; }
+  #aiStatus.ok { color: #2f855a; font-weight: 600; }
 
   /* ---------- 週報シート ---------- */
   .sheet-wrap { display: flex; justify-content: center; padding: 14px 8px 60px; }
@@ -158,9 +167,31 @@
     <label><input type="radio" name="target" value="thisWeek"> 今週行動予定</label>
     <span style="margin-left:12px">既定の勤務時間:</span><input type="text" id="defTime" value="9-18">
     <span>既定の勤務場所:</span><input type="text" id="defPlace" value="資さん本社" style="width:130px">
+  </div>
+
+  <div class="ai-box">
+    <div class="row" style="margin-top:0">
+      <b>✨ AIで清書して自動作成（推奨・高精度）</b>
+      <input type="password" id="aiKey" placeholder="Gemini APIキー" style="width:200px">
+      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キーを無料で取得</a>
+      <button class="primary" id="aiBtn">✨ AIで週報を自動作成</button>
+      <span id="aiStatus"></span>
+    </div>
+    <details style="margin-top:6px">
+      <summary style="cursor:pointer;font-size:12px;color:#555">APIキーを使わない方法（GeminiやChatGPTの画面にコピペ）</summary>
+      <div class="row">
+        <button id="copyPromptBtn">📋 AI用の指示文をコピー</button>
+        <span style="font-size:12px;color:#555">→ Gemini等に貼って送信 → 返ってきたJSONを下に貼り付け →</span>
+        <button id="aiImportBtn">取り込み</button>
+      </div>
+      <textarea id="aiPaste" placeholder="AIの回答（JSON）をここに貼り付け" style="min-height:70px;margin-top:6px"></textarea>
+    </details>
+  </div>
+
+  <div class="row">
     <label><input type="checkbox" id="optSep" checked> 全角スペース区切りを「 / 」に変換</label>
-    <label><input type="checkbox" id="optDraft" checked> 成果・観察・分析・その他も自動で下書き</label>
-    <button class="primary" id="parseBtn">週報を自動作成</button>
+    <label><input type="checkbox" id="optDraft" checked> 成果・観察なども下書き</label>
+    <button id="parseBtn">簡易作成（AIなし）</button>
     <span id="parseResult" style="color:#2f855a;font-weight:600"></span>
   </div>
   <div class="sel-buttons">
@@ -170,7 +201,7 @@
     <button data-sec="analyses">→ 分析へ</button>
     <button data-sec="others">→ その他へ</button>
   </div>
-  <div class="hint">・貼り付けて「週報を自動作成」を押すだけで、行動結果の表に加えて成果①〜⑤・観察・分析・その他まで自動で下書きします。<br>
+  <div class="hint">・「AIで週報を自動作成」は、メモを要約・言い換えして提出レベルの文章（成果の件数集計、観察の文章化、分析の打ち手まで）に仕上げます。APIキーは初回に1度入れるだけで保存されます。<br>
   ・「時間」は勤務時間（例: 9-18）から自動計算します（7時間以上は休憩1時間を控除）。仕上げはシート上の各セルを直接クリックして編集してください。</div>
 </div>
 
@@ -474,6 +505,17 @@ function fillSection(secKey, items) {
   return fitted.length;
 }
 
+// 今週行動予定の平日（月〜金）に既定の勤務時間・場所を先に入れておく
+function prefillThisWeek(defTime, defPlace) {
+  for (let i = 0; i < 5; i++) {
+    const day = state.thisWeek[i];
+    if (day.work || day.time || day.place) continue;
+    day.time = defTime;
+    day.place = defPlace;
+    day.hours = calcHours(defTime);
+  }
+}
+
 function applyParsed(weekKey, buckets, opts) {
   buckets.forEach((lines, i) => {
     if (!lines.length) return;
@@ -483,6 +525,7 @@ function applyParsed(weekKey, buckets, opts) {
     if (!day.place) day.place = opts.defPlace;
     if (!day.hours) day.hours = calcHours(day.time);
   });
+  if (weekKey === 'lastWeek') prefillThisWeek(opts.defTime, opts.defPlace);
   let summary = '';
   if (opts.draft && weekKey === 'lastWeek') {
     const drafted = classifyMemo(buckets);
@@ -497,6 +540,183 @@ function applyParsed(weekKey, buckets, opts) {
   scheduleSave();
   return summary;
 }
+
+/* ---------- AI清書 ---------- */
+const AI_KEY_STORAGE = 'weekly-report-gemini-key';
+const AI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+function buildPrompt(memo) {
+  return `あなたは人事部向け「業務週報」の清書アシスタントです。
+以下の「毎日の記録メモ」を読み、指定のJSON形式で週報を作成してください。
+
+# 清書のルール
+
+## days（曜日ごとの職務内容）
+- 1曜日につき1行。「 / 」区切りの体言止めで簡潔に（1行あたり最大45文字程度）
+- 良い例: 「OB面談 / リクオプ購買クルー採用面接 / 面接日程登録」
+- 感想・気づき・詳しい件数はここに書かず、成果・観察に回す
+- メモにない曜日は空文字にする
+
+## results（先週の成果/成果物・最大5件）
+- 完了したこと・作ったもの・数値実績。件数・所要時間などの数字は必ず残す
+- 同種の作業（スカウト送信など）は件数を合算して1項目にまとめ、内訳を（）で示す
+- 良い例: 「クイック福岡・バイトル求人の時給突合せ確認。通常2社分で1.5時間所要（送付データと実時給の照合を自動化）」
+- 良い例: 「グルメキャリー スカウト送信 計62件（木52件・金10件）」
+
+## observations（観察・最大5件）
+- 問題発見・課題・違和感・気づき。メモの感想を「事実＋気づき」の完結した文に書き直す
+- 良い例: 「リクオプは新着通知が来ない仕様。正社員採用・購買部クルー採用ともに、自分から毎日確認しに行く必要がある」
+- 良い例: 「面接会場の調査は、候補探しに加え商用利用可否・振込対応の確認作業が重い」
+
+## analyses（分析・observationsと同じ件数で1対1対応）
+- 必ず「→ 」で始め、原因の特定または推測と、具体的な打ち手を書く
+- 良い例: 「→ 余分な店長アカウントを自身に割当てて確認を一本化。購買部にも応用すれば代理確認は不要になると思う」
+- 良い例: 「→ まず実数値の取得方法を設計し、引継ぎと並行して現状把握。求人内容と採用結果を紐づける」
+- メモに直接書かれていなくても、業務文脈から自然な推測・提案を書いてよい（ただし事実や数字の捏造は禁止）
+
+## others（その他・最大5件）
+- 上長への相談・依頼・共有事項。「〜を確認していただきたい」「〜済み（反映待ち）」など相手に伝わる形に
+- 該当がなければ空配列でよい
+
+# 文体
+- です・ます調は使わない。簡潔な報告体
+- メモに書かれていない事実・数字を作らない（分析の推測・提案は可）
+
+# 出力形式
+次のJSONだけを出力する。説明文・コードブロック記号は不要。
+{"days":{"月":"","火":"","水":"","木":"","金":"","土":"","日":""},"results":[],"observations":[],"analyses":[],"others":[]}
+
+# 毎日の記録メモ
+${memo}`;
+}
+
+function extractJSON(text) {
+  const s = text.indexOf('{');
+  const e = text.lastIndexOf('}');
+  if (s < 0 || e <= s) throw new Error('JSONが見つかりません');
+  return JSON.parse(text.slice(s, e + 1));
+}
+
+async function callGemini(key, prompt) {
+  let lastErr = null;
+  for (const model of AI_MODELS) {
+    try {
+      const res = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(key),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.3, responseMimeType: 'application/json' }
+          })
+        });
+      if (!res.ok) {
+        const body = await res.text();
+        lastErr = new Error('HTTP ' + res.status + (res.status === 400 || res.status === 403 ? '（APIキーを確認してください）' : '') + ' [' + model + ']');
+        if (res.status === 400 || res.status === 403) throw lastErr; // キー不正は他モデルでも同じ
+        continue; // モデルが無い等 → 次のモデルへ
+      }
+      const data = await res.json();
+      const text = (((data.candidates || [])[0] || {}).content || {}).parts?.map(p => p.text).join('') || '';
+      if (!text) { lastErr = new Error('AIの応答が空でした [' + model + ']'); continue; }
+      return extractJSON(text);
+    } catch (e) {
+      if (/APIキー/.test(e.message)) throw e;
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('AI呼び出しに失敗しました');
+}
+
+function applyAIResult(obj, targetKey, defTime, defPlace) {
+  const days = obj.days || {};
+  const arr = (v) => Array.isArray(v) ? v.map(x => String(x).trim()).filter(Boolean) : [];
+  DOWS.forEach((dow, i) => {
+    const work = String(days[dow] || '').trim();
+    if (!work) return;
+    const day = state[targetKey][i];
+    day.work = work;
+    if (!day.time) day.time = defTime;
+    if (!day.place) day.place = defPlace;
+    if (!day.hours) day.hours = calcHours(day.time);
+  });
+  let summary = '';
+  if (targetKey === 'lastWeek') {
+    prefillThisWeek(defTime, defPlace);
+    const nR = fillSection('results', arr(obj.results));
+    const obs = arr(obj.observations);
+    const nO = fillSection('observations', obs);
+    let ana = arr(obj.analyses).map(a => /^→/.test(a) ? a : '→ ' + a);
+    while (ana.length < Math.min(obs.length, 5)) ana.push('→');
+    const nA = fillSection('analyses', ana);
+    const nE = fillSection('others', arr(obj.others));
+    summary = '成果' + nR + '・観察' + nO + '・分析' + nA + '・その他' + nE + '件';
+  }
+  renderAll();
+  scheduleSave();
+  return summary;
+}
+
+function aiStatus(msg, cls) {
+  const el = document.getElementById('aiStatus');
+  el.textContent = msg;
+  el.className = cls || '';
+}
+
+document.getElementById('aiKey').addEventListener('change', e => {
+  localStorage.setItem(AI_KEY_STORAGE, e.target.value.trim());
+});
+
+document.getElementById('aiBtn').addEventListener('click', async () => {
+  const memo = document.getElementById('intakeText').value;
+  if (!memo.trim()) { alert('記録テキストを貼り付けてください'); return; }
+  const key = document.getElementById('aiKey').value.trim();
+  if (!key) {
+    aiStatus('APIキーを入れてください（「キーを無料で取得」から1分で作れます）', 'err');
+    return;
+  }
+  localStorage.setItem(AI_KEY_STORAGE, key);
+  const btn = document.getElementById('aiBtn');
+  btn.disabled = true;
+  aiStatus('AIが清書しています…（10〜30秒）');
+  try {
+    const obj = await callGemini(key, buildPrompt(memo));
+    const target = document.querySelector('input[name="target"]:checked').value;
+    const summary = applyAIResult(obj, target,
+      document.getElementById('defTime').value.trim(),
+      document.getElementById('defPlace').value.trim());
+    aiStatus('✓ 完成しました' + (summary ? '（' + summary + '）' : '') + '。内容を確認して仕上げてください', 'ok');
+  } catch (e) {
+    aiStatus('エラー: ' + e.message + '（下の「APIキーを使わない方法」もあります）', 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('copyPromptBtn').addEventListener('click', () => {
+  const memo = document.getElementById('intakeText').value;
+  if (!memo.trim()) { alert('先に記録テキストを貼り付けてください'); return; }
+  navigator.clipboard.writeText(buildPrompt(memo)).then(
+    () => aiStatus('✓ 指示文をコピーしました。GeminiやChatGPTに貼って送信してください', 'ok'),
+    () => alert('コピーに失敗しました'));
+});
+
+document.getElementById('aiImportBtn').addEventListener('click', () => {
+  const text = document.getElementById('aiPaste').value;
+  if (!text.trim()) { alert('AIの回答（JSON）を貼り付けてください'); return; }
+  try {
+    const obj = extractJSON(text);
+    const target = document.querySelector('input[name="target"]:checked').value;
+    const summary = applyAIResult(obj, target,
+      document.getElementById('defTime').value.trim(),
+      document.getElementById('defPlace').value.trim());
+    aiStatus('✓ 取り込みました' + (summary ? '（' + summary + '）' : ''), 'ok');
+    document.getElementById('aiPaste').value = '';
+  } catch (e) {
+    aiStatus('取り込みエラー: ' + e.message, 'err');
+  }
+});
 
 /* ---------- イベント ---------- */
 document.addEventListener('input', e => {
@@ -656,6 +876,7 @@ function boot() {
   if (saved) {
     try { state = Object.assign(defaultState(), JSON.parse(saved)); } catch (e) {}
   }
+  document.getElementById('aiKey').value = localStorage.getItem(AI_KEY_STORAGE) || '';
   renderAll();
   // シートが空のうちは貼り付けパネルを最初から開いておく
   if (state.lastWeek.every(d => !d.work)) {
